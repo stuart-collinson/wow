@@ -165,17 +165,23 @@ const stats = await fetchStats()
 
 Every file follows this order: **imports → types → logic → render**
 
+All type declarations — regardless of how many — must be grouped together immediately after imports, before any logic or component code. Never scatter type declarations throughout the file.
+
 ```typescript
 // 1. IMPORTS
 import { useState, useCallback } from 'react'
 import { useMarketStore } from '@/stores/marketStore'
 import { MarketRow } from './MarketList/MarketRow'
 
-// 2. TYPES (local — not exported if used only here)
+// 2. TYPES — all types together here, immediately after imports
+// Local types (not exported) live here
+// Imported shared types come from @/types — do not re-declare them
 type Props = {
   marketId: string
   onSelect: (id: string) => void
 }
+
+type SortDirection = 'asc' | 'desc'
 
 // 3. LOGIC (hooks, handlers, derived state)
 const useMarketSelection = (marketId: string) => {
@@ -188,6 +194,18 @@ const MarketList = ({ marketId, onSelect }: Props): JSX.Element => {
 }
 
 export default MarketList
+```
+
+```typescript
+// FAIL: Types scattered through the file
+import { useState } from 'react'
+
+const MarketList = (): JSX.Element => {
+  type LocalState = { count: number }  // FAIL — types must be at the top
+  // ...
+}
+
+type Props = { id: string }  // FAIL — types must come before logic/render
 ```
 
 ## Comments — Near Zero

@@ -4,6 +4,32 @@ Modern frontend patterns for Next.js, TypeScript, Zustand, and tRPC.
 
 ## Component Architecture
 
+### One Component Per File
+
+Every `.tsx` file defines exactly one component. There must be exactly one `return (` at the component level. If you need sub-components, each one gets its own `.tsx` file.
+
+```typescript
+// FAIL: Multiple components in one file
+const NavItem = ({ label }: { label: string }): JSX.Element => (
+  <span>{label}</span>
+)
+
+const Sidebar = (): JSX.Element => (
+  <nav>
+    <NavItem label="Home" />
+  </nav>
+)
+
+export default Sidebar
+```
+
+```
+// PASS: Each component in its own file
+Sidebar/
+├── index.tsx     ← defines only Sidebar, imports NavItem
+└── NavItem.tsx   ← defines only NavItem
+```
+
 ### Parent Owns Logic — Sub-components Own Rendering
 
 Parent components orchestrate data, state, and handlers. Sub-components are pure rendering of a single concern. Sub-components live in a directory named after the parent.
@@ -94,14 +120,19 @@ const Page = (): JSX.Element => (
 
 ## Type Scoping
 
+Two categories — local or shared. The rule for where a type lives is determined by whether it needs to be exported:
+
+- **Local type** — only used within this file. Define it in the file, never export it.
+- **Exported type** — needed by any other file. It must live in a `.ts` file in the `types/` directory. Never export a type from a `.tsx` component file.
+
 ```typescript
-// PASS: Local type — used by one component, defined locally, never exported
+// PASS: Local type in component — defined in the file, not exported
 type Props = {
   marketId: string
   onSelect: (id: string) => void
 }
 
-// PASS: Shared type — used by 2+ components, lives in /types directory
+// PASS: Exported type — lives in types/market.ts, imported where needed
 // types/market.ts
 export type Market = {
   id: string
@@ -109,8 +140,8 @@ export type Market = {
   status: 'active' | 'resolved' | 'closed'
 }
 
-// FAIL: Exporting a type that's only used in one file
-export type ButtonProps = { ... }  // if only Button.tsx uses it
+// FAIL: Exporting any type from a .tsx component file
+export type MarketCardProps = { ... }  // FAIL — move to types/marketCard.types.ts
 
 // FAIL: Same type defined in multiple files
 // Both MarketCard.tsx and MarketList.tsx define their own Market type
@@ -288,36 +319,74 @@ useEffect(() => setMarkets(data), [data])  // Unnecessary — use tRPC cache dir
 
 ### Composition
 
+Each composable piece is its own file. A parent that composes them imports them.
+
+```
+Card/
+├── index.tsx      ← composes CardHeader + CardBody
+├── CardHeader.tsx
+└── CardBody.tsx
+```
+
 ```typescript
-type CardProps = {
+// Card/CardHeader.tsx
+type Props = { children: React.ReactNode }
+
+const CardHeader = ({ children }: Props): JSX.Element => (
+  <div className="card-header">{children}</div>
+)
+
+export default CardHeader
+```
+
+```typescript
+// Card/index.tsx
+import CardHeader from './CardHeader'
+import CardBody from './CardBody'
+
+type Props = {
   children: React.ReactNode
   variant?: 'default' | 'outlined'
 }
 
-const Card = ({ children, variant = 'default' }: CardProps): JSX.Element => (
+const Card = ({ children, variant = 'default' }: Props): JSX.Element => (
   <div className={`card card-${variant}`}>{children}</div>
 )
 
-const CardHeader = ({ children }: { children: React.ReactNode }): JSX.Element => (
-  <div className="card-header">{children}</div>
-)
-
-const CardBody = ({ children }: { children: React.ReactNode }): JSX.Element => (
-  <div className="card-body">{children}</div>
-)
+export default Card
 ```
 
 ### Compound Components
 
+Context lives in its own file. Each compound component is its own file.
+
+```
+Tabs/
+├── index.tsx        ← Tabs root, owns context and state
+├── Tab.tsx          ← individual tab button
+└── TabsContext.ts   ← context definition (not a component — .ts not .tsx)
+```
+
 ```typescript
+// Tabs/TabsContext.ts
+import { createContext } from 'react'
+
 type TabsContextValue = {
   activeTab: string
   setActiveTab: (tab: string) => void
 }
 
-const TabsContext = createContext<TabsContextValue | undefined>(undefined)
+export const TabsContext = createContext<TabsContextValue | undefined>(undefined)
+```
 
-const Tabs = ({ children, defaultTab }: { children: React.ReactNode; defaultTab: string }): JSX.Element => {
+```typescript
+// Tabs/index.tsx
+import { useState } from 'react'
+import { TabsContext } from './TabsContext'
+
+type Props = { children: React.ReactNode; defaultTab: string }
+
+const Tabs = ({ children, defaultTab }: Props): JSX.Element => {
   const [activeTab, setActiveTab] = useState(defaultTab)
   return (
     <TabsContext.Provider value={{ activeTab, setActiveTab }}>
@@ -326,7 +395,17 @@ const Tabs = ({ children, defaultTab }: { children: React.ReactNode; defaultTab:
   )
 }
 
-const Tab = ({ id, children }: { id: string; children: React.ReactNode }): JSX.Element => {
+export default Tabs
+```
+
+```typescript
+// Tabs/Tab.tsx
+import { useContext } from 'react'
+import { TabsContext } from './TabsContext'
+
+type Props = { id: string; children: React.ReactNode }
+
+const Tab = ({ id, children }: Props): JSX.Element => {
   const context = useContext(TabsContext)
   if (!context) throw new Error('Tab must be used within Tabs')
 
@@ -336,6 +415,8 @@ const Tab = ({ id, children }: { id: string; children: React.ReactNode }): JSX.E
     </button>
   )
 }
+
+export default Tab
 ```
 
 ## Performance Optimisation
