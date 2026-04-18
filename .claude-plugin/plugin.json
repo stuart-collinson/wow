@@ -1,0 +1,9 @@
+{
+  "name": "ways-of-working",
+  "description": "Engineering standards — gates, skills, agents, hooks",
+  "version": "1.0.0",
+  "author": {
+    "name": "Stuart Collinson"
+  },
+  "repository": "https://github.com/stuart-collinson/wow"
+}

@@ -1,0 +1,14 @@
+{
+  "name": "ways-of-working",
+  "owner": {
+    "name": "Stuart Collinson",
+    "url": "https://github.com/stuart-collinson"
+  },
+  "plugins": [
+    {
+      "name": "ways-of-working",
+      "source": "./",
+      "description": "Engineering standards for spec-driven development"
+    }
+  ]
+}
