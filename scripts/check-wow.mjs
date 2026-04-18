@@ -37,4 +37,9 @@ ${backendPatterns}
 ${securityPatterns}
 `;
 
-console.log(JSON.stringify({ additionalContext: context }));
+console.log(JSON.stringify({
+  hookSpecificOutput: {
+    hookEventName: 'SessionStart',
+    additionalContext: context,
+  },
+}));
