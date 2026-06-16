@@ -12,14 +12,14 @@ const queryClient = useQueryClient()                     // TanStack's client, f
 
 useQuery(trpc.posts.list.queryOptions({ status: 'active' }))   // tRPC builds the options, TanStack runs the query
 useMutation(trpc.posts.create.mutationOptions())               // same for writes
-queryClient.invalidateQueries({ queryKey: trpc.posts.queryKey() })  // typed, hierarchical keys — auto-generated
+queryClient.invalidateQueries({ queryKey: trpc.posts.pathKey() })  // whole-router prefix key — invalidates every posts.* query
 ```
 
 What this means in practice:
 
-- **tRPC replaces the network layer.** Your tRPC router (`server/routers/<domain>.ts`, see `backend-patterns`) is the typed client. There is **no** hand-rolled `lib/api/client.ts`, no per-domain `fetch` wrappers, and **no hand-built query-key factories** — `trpc.<path>.queryKey()` generates hierarchical keys for you (`trpc.posts.queryKey()` is a prefix of `trpc.posts.list.queryKey()`, so prefix-invalidation works out of the box).
+- **tRPC replaces the network layer.** Your tRPC router (`server/routers/<domain>.ts`, see `backend-patterns`) is the typed client. There is **no** hand-rolled `lib/api/client.ts`, no per-domain `fetch` wrappers, and **no hand-built query-key factories** — tRPC generates the keys for you. Two builders, and the distinction matters: **`trpc.<domain>.<proc>.queryKey(input?)`** is the key for a *single procedure* (`trpc.posts.list.queryKey()`), while **`trpc.<domain>.pathKey()`** is the *whole-router prefix* (`trpc.posts.pathKey()`). `trpc.posts.pathKey()` is a prefix of `trpc.posts.list.queryKey()`, so prefix-invalidation works out of the box. (`pathFilter()` is the matching filter form for the predicate-based query-client methods.) There is **no** `queryKey()` on a non-leaf router node — reaching for `trpc.posts.queryKey()` is a type error; that case is `pathKey()`.
 - **TanStack Query owns the cache.** Every discipline below — stale times, surgical cache writes, polling, pagination, prefetch — is a TanStack Query concern, expressed through tRPC's factories.
-- **Raw `useQuery` / `useMutation` is still correct for server reads that don't go through tRPC** — a third-party REST API, a direct Supabase call, a signed-URL upload. Those use a plain `queryFn` and live under the same `hooks/<domain>/` shape, sharing the one cache. Don't route them through a parallel fetch wrapper.
+- **Raw `useQuery` / `useMutation` is still correct for server reads that don't go through tRPC** — a third-party REST API, a direct Supabase call, a signed-URL upload. Those use a plain `queryFn` and live under the same `hooks/<domain>/` shape, sharing the one cache. Don't route them through a parallel fetch wrapper. These *do* need an explicit `queryKey` — there's no tRPC factory to generate one — so keep that key (and its `staleTime`) in the domain's `<domain>.cache.ts`, not hand-rolled inline. The "no hand-built keys" rule is about not re-rolling what tRPC already generates, not a ban on keys for genuinely non-tRPC queries.
 
 Use the **new** integration (`useTRPC()` + `trpc.x.queryOptions()` + `useQuery`), not the classic `trpc.x.useQuery()` proxy. It is tRPC's recommended path and the reason the structure below composes cleanly.
 
@@ -39,7 +39,7 @@ Each of these is a **gate failure**:
 
 - a domain with hooks but no `<domain>.cache.ts` baking its stale times;
 - a `staleTime` or page size hard-coded inside a hook instead of imported from the cache file;
-- a hand-built query-key array (`['posts', id]`) instead of `trpc.posts.queryKey()`;
+- a hand-built query-key array (`['posts', id]`) for a query that *has* a tRPC procedure, instead of `trpc.posts.byId.queryKey({ id })` (or `trpc.posts.pathKey()` for the whole domain);
 - an `index.ts` barrel that re-exports the domain's hooks;
 - a raw `fetch` / network call living inside a hook for an endpoint that has a tRPC procedure.
 
@@ -193,7 +193,7 @@ export const usePost = (id: string | undefined) => {
 
 ## 5. Mutations — update what you know, invalidate what you don't
 
-Default to **surgical cache writes**, not blanket invalidate-then-refetch. Use `useQueryClient()` + `trpc.x.queryKey()` for the keys.
+Default to **surgical cache writes**, not blanket invalidate-then-refetch. Use `useQueryClient()` with `trpc.x.queryKey(input?)` (a single procedure) or `trpc.<domain>.pathKey()` (a whole router) for the keys.
 
 ```ts
 // hooks/posts/useUpdatePost.ts
@@ -351,7 +351,7 @@ Carries the universal `coding-standards` comment rule, held to a harder bar in t
 1. **Procedures →** add them to your tRPC router `server/routers/<domain>.ts` (see `backend-patterns`). This is the network + type layer; there is no separate client fetcher.
 2. **Cache config →** `hooks/<domain>/<domain>.cache.ts` — `STALE_TIMES`, page sizes, poll intervals, option presets, and the `filters → input` mapper. Pure config, no React.
 3. **Hooks →** `hooks/<domain>/use<Domain><Verb>.ts`, one export per file, spreading `trpc.<domain>.<proc>.queryOptions(...)` / `.mutationOptions(...)`. Gate absent inputs with `skipToken`.
-4. **Mutations →** surgical `setQueryData(trpc.x.queryKey(...), …)` for what the response tells you; `invalidateQueries({ queryKey: trpc.x.queryKey() })` for what it doesn't.
+4. **Mutations →** surgical `setQueryData(trpc.x.queryKey(...), …)` for what the response tells you; `invalidateQueries({ queryKey: trpc.x.queryKey() })` (or `trpc.<domain>.pathKey()` to clear the whole domain) for what it doesn't.
 5. **Polling →** `refetchInterval` callback in the hook (not the cache file) if any query tracks an async process. Name the interval; cap the poll.
 6. **Pagination →** `useInfiniteQuery` + `infiniteQueryOptions` for cursors, or `useQuery` + `keepPreviousData` for pages. View state in the URL.
 7. **Prefetch →** warm the landing query in the route's Server Component with `prefetchQuery` + `<HydrationBoundary>`, reusing the cache file's mapper + stale time.

@@ -143,7 +143,7 @@ import { useEffect, useState } from 'react'
 import { z } from 'zod'
 
 import { useMarketStore } from '@/stores/marketStore'
-import { trpc } from '@/lib/trpc'
+import { useTRPC } from '@/lib/trpc/client'
 import type { Market } from '@/types/market.types'
 ```
 

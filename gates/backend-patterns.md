@@ -1,52 +1,114 @@
 # Backend Development Patterns
 
-Backend architecture patterns and best practices for scalable server-side Next.js / TypeScript applications.
+Backend patterns for a **Next.js (App Router) + TypeScript** application whose typed API layer is **tRPC** — the same tRPC the `tanstack-query` gate consumes on the client. tRPC is the contract: a procedure's input/output types *are* the client's types, so there is no hand-written API schema and no REST fetcher for app data (see `tanstack-query`).
 
-## API Design Patterns
+These patterns are **data-source-agnostic**. A Next.js app may have no database at all (a procedure computes a result, calls a third-party API, or reads a file), may talk to an external service, or may own a database (Postgres / Supabase / etc.). Where a rule only applies once you *have* a database, it says so — don't add a database, an ORM, or a repository layer until the app needs one.
 
-### RESTful API Structure
+## API Design — tRPC router & procedures
+
+App data flows through tRPC procedures, not hand-rolled REST endpoints. A domain is a router of procedures (`query` for reads, `mutation` for writes) with Zod-validated input; the procedure's return type becomes the client's type for free.
 
 ```typescript
-// PASS: Resource-based URLs
-GET    /api/markets
-GET    /api/markets/:id
-POST   /api/markets
-PUT    /api/markets/:id
-PATCH  /api/markets/:id
-DELETE /api/markets/:id
+// server/trpc.ts — init once; context resolves the caller (see Authentication)
+import { initTRPC } from '@trpc/server'
 
-// PASS: Query parameters for filtering, sorting, pagination
-GET /api/markets?status=active&sort=volume&limit=20&offset=0
+const t = initTRPC.context<Context>().create()
+
+export const router = t.router
+export const publicProcedure = t.procedure
 ```
 
-### Repository Pattern
+```typescript
+// server/routers/markets.ts — one router per domain; procedures stay thin
+import { z } from 'zod'
+import { router, publicProcedure } from '@/server/trpc'
+
+export const marketsRouter = router({
+  list: publicProcedure
+    .input(z.object({
+      status: z.enum(['active', 'resolved', 'closed']).optional(),
+      search: z.string().optional(),
+      limit: z.number().min(1).max(100).default(25),
+      cursor: z.string().nullish(),                 // cursor, not offset — see below
+    }))
+    .query(({ input, ctx }) => ctx.markets.list(input)),
+
+  byId: publicProcedure
+    .input(z.object({ id: z.string() }))
+    .query(({ input, ctx }) => ctx.markets.byId(input.id)),
+
+  create: publicProcedure
+    .input(createMarketSchema)
+    .mutation(({ input, ctx }) => ctx.markets.create(input)),
+})
+```
 
 ```typescript
-// type, not interface — implements still works with type in TS
+// server/routers/_app.ts — the root router; its type is the whole client contract
+import { router } from '@/server/trpc'
+import { marketsRouter } from '@/server/routers/markets'
+
+export const appRouter = router({ markets: marketsRouter })
+export type AppRouter = typeof appRouter
+```
+
+Mount it once as an App Router route handler with the fetch adapter:
+
+```typescript
+// app/api/trpc/[trpc]/route.ts
+import { fetchRequestHandler } from '@trpc/server/adapters/fetch'
+import { appRouter } from '@/server/routers/_app'
+import { createTRPCContext } from '@/server/trpc'
+
+const handler = (req: Request) =>
+  fetchRequestHandler({
+    endpoint: '/api/trpc',
+    req,
+    router: appRouter,
+    createContext: () => createTRPCContext({ headers: req.headers }),
+  })
+
+export { handler as GET, handler as POST }
+```
+
+- **Procedures stay thin.** Validate input with Zod, then delegate to a service. No business logic and no data access inline in the procedure.
+- **Cursor pagination, not offset.** A list procedure takes a `cursor` and returns `{ items, nextCursor }` (`nextCursor: null` = last page) — the exact shape `useInfiniteQuery` consumes in `tanstack-query`. Offset (`limit=20&offset=40`) re-scans skipped rows and double-counts or drops rows under concurrent writes; reach for it only for a fixed, small, rarely-changing set. The keyset mechanics live in the service / repository below.
+- **REST route handlers still have their place** — webhooks, OAuth callbacks, public or third-party-facing endpoints, file streaming — as App Router route handlers (`app/api/<name>/route.ts`). What they are *not* for is your own app's data layer; that is tRPC.
+
+## Service & data-access layer
+
+### Service layer & (optional) repository
+
+Business logic lives in a **service**; the procedure just validates and delegates. *If* the app has a database, the service reaches it through a **repository** that abstracts the data source — so Supabase can be swapped for Prisma / Drizzle / a remote API without touching the service. A database-less app skips the repository entirely: the service computes the result or calls a third-party API directly.
+
+```typescript
+// the data-access contract — what, not how. type, not interface.
 type MarketRepository = {
-  findAll: (filters?: MarketFilters) => Promise<Market[]>
-  findById: (id: string) => Promise<Market | null>
+  list: (input: MarketListInput) => Promise<{ items: Market[]; nextCursor: string | null }>
+  byId: (id: string) => Promise<Market | null>
   create: (data: CreateMarketDto) => Promise<Market>
-  update: (id: string, data: UpdateMarketDto) => Promise<Market>
-  delete: (id: string) => Promise<void>
 }
 
+// example: a Supabase-backed implementation — ONE option, not a requirement.
+// Could equally be Prisma, Drizzle, a REST client, or omitted if the app has no DB.
 class SupabaseMarketRepository implements MarketRepository {
-  findAll = async (filters?: MarketFilters): Promise<Market[]> => {
-    let query = supabase.from('markets').select('*')
-
-    if (filters?.status) query = query.eq('status', filters.status)
-    if (filters?.limit) query = query.limit(filters.limit)
+  list = async ({ status, limit, cursor }: MarketListInput) => {
+    let query = supabase.from('markets').select('id, name, status, volume').order('id').limit(limit + 1)
+    if (status) query = query.eq('status', status)
+    if (cursor) query = query.gt('id', cursor)              // keyset seek, not offset
 
     const { data, error } = await query
+    if (error) throw new ApiError(500, error.message)
 
-    if (error) throw new Error(error.message)
-    return data
+    const items = data.slice(0, limit)                      // fetched limit + 1; the extra row signals "more"
+    const nextCursor = data.length > limit ? items.at(-1)!.id : null
+    return { items, nextCursor }
   }
+  // byId, create …
 }
 ```
 
-### Service Layer Pattern
+The service holds the logic that isn't a single data call — composition, fan-out, ranking, calling other services:
 
 ```typescript
 class MarketService {
@@ -66,26 +128,25 @@ class MarketService {
 }
 ```
 
-### Middleware Pattern
+### Auth — a tRPC middleware (`protectedProcedure`)
+
+For tRPC, authentication is a **middleware** that runs before the resolver and narrows the context — not a per-handler wrapper. Build a `protectedProcedure` once and use it for every authed procedure; the resolver then reads `ctx.user` with a non-null type.
 
 ```typescript
-export const withAuth = (handler: NextApiHandler): NextApiHandler =>
-  async (req, res) => {
-    const token = req.headers.authorization?.replace('Bearer ', '')
+// server/trpc.ts
+import { TRPCError } from '@trpc/server'
 
-    if (!token) return res.status(401).json({ error: 'Unauthorized' })
-
-    try {
-      const user = await verifyToken(token)
-      req.user = user
-      return handler(req, res)
-    } catch {
-      return res.status(401).json({ error: 'Invalid token' })
-    }
-  }
+export const protectedProcedure = t.procedure.use(({ ctx, next }) => {
+  if (!ctx.user) throw new TRPCError({ code: 'UNAUTHORIZED' })
+  return next({ ctx: { ...ctx, user: ctx.user } })   // user is non-null downstream
+})
 ```
 
+The bearer token is verified once in `createTRPCContext`, which puts `user` on the context (see Authentication below). A non-tRPC route handler (a webhook, an upload) guards itself with `requireAuth(request)` instead.
+
 ## Database Patterns
+
+> Applies only when your app owns a database. A database-less Next.js app (no DB, or only a third-party API) skips this section. The examples use Supabase, but the principles — select only what you need, batch to avoid N+1, wrap multi-step writes in a transaction — hold for any SQL data source.
 
 ### Query Optimisation
 
@@ -169,6 +230,8 @@ class CachedMarketRepository implements MarketRepository {
 ```
 
 ## Error Handling
+
+tRPC procedures signal failure by throwing `TRPCError` (`code: 'NOT_FOUND' | 'UNAUTHORIZED' | 'BAD_REQUEST' | …`); tRPC's `errorFormatter` shapes the wire response once (attach a Zod `flatten()` there so the client gets typed field errors). The handler below is for any **non-tRPC route handlers** (webhooks, uploads, public endpoints).
 
 ### Centralised Error Handler
 
