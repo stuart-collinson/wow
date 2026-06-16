@@ -163,6 +163,7 @@ Server Components don't use the browser client — they call through `createTRPC
 import 'server-only'
 
 import { createTRPCOptionsProxy } from '@trpc/tanstack-react-query'
+import { headers } from 'next/headers'
 import { cache } from 'react'
 
 import { makeQueryClient } from '@/lib/trpc/query-client'
@@ -173,7 +174,8 @@ import { createTRPCContext } from '@/server/trpc'
 export const getQueryClient = cache(makeQueryClient)
 
 export const trpc = createTRPCOptionsProxy({
-  ctx: createTRPCContext,
+  // same context builder as the route handler, fed RSC headers from next/headers
+  ctx: async () => createTRPCContext({ headers: await headers() }),
   router: appRouter,
   queryClient: getQueryClient,
 })

@@ -9,8 +9,19 @@ These patterns are **data-source-agnostic**. A Next.js app may have no database 
 App data flows through tRPC procedures, not hand-rolled REST endpoints. A domain is a router of procedures (`query` for reads, `mutation` for writes) with Zod-validated input; the procedure's return type becomes the client's type for free.
 
 ```typescript
-// server/trpc.ts — init once; context resolves the caller (see Authentication)
+// server/trpc.ts — init once; the context builder runs per request
 import { initTRPC } from '@trpc/server'
+
+import { verifyToken } from '@/server/auth'   // see Authentication below
+
+// ONE context builder, fed `headers` so it works for both the route handler
+// (req.headers) and the RSC caller (next/headers). `user` is null when anonymous.
+export const createTRPCContext = async ({ headers }: { headers: Headers }) => {
+  const token = headers.get('authorization')?.replace('Bearer ', '')
+  return { user: token ? verifyToken(token) : null, headers }
+}
+
+type Context = Awaited<ReturnType<typeof createTRPCContext>>
 
 const t = initTRPC.context<Context>().create()
 
