@@ -43,20 +43,143 @@ Each of these is a **gate failure**:
 - an `index.ts` barrel that re-exports the domain's hooks;
 - a raw `fetch` / network call living inside a hook for an endpoint that has a tRPC procedure.
 
-## Supporting files (`lib/`)
+## Foundation — set up ONCE (not per domain)
 
-The domain hooks lean on a small, fixed set of `lib/` files. They are not per-domain — set them up once:
+Everything in this section is wired **a single time, when you stand the app up**. It does **not** change as you add domains — the per-domain `hooks/<domain>/` work (below) is what repeats. Get these few files right and a new domain is just a cache file + some hooks. Treat this as the one-time cost of adopting the data layer; if you find yourself editing it to add a domain, something has gone wrong.
 
 ```
 lib/
   trpc/
-    client.tsx                # 'use client' — TRPCProvider + useTRPC()
-    server.tsx                # server tRPC caller + getQueryClient() for RSC prefetch
-    query-client.ts           # makeQueryClient() — global TanStack defaults (§2)
-  time.ts                     # seconds() / minutes() duration helpers — no bare `60 * 1000`
+    query-client.ts           # makeQueryClient() — the global TanStack defaults (§2)
+    client.tsx                # 'use client' — useTRPC() + the React provider
+    server.tsx                # 'server-only' — the RSC caller + getQueryClient() for prefetch (§6)
+  time.ts                     # seconds() / minutes() — no bare `60 * 1000`
+app/
+  layout.tsx                  # wraps the tree in <TRPCReactProvider> (once)
+  api/trpc/[trpc]/route.ts    # the tRPC HTTP handler (see backend-patterns)
 ```
 
-Server-side prefetch lives in the App Router route (`app/<route>/page.tsx`), not in `hooks/` — see §6. There is no per-domain `prefetch*.ts` file.
+The tRPC **server** itself — `server/trpc.ts` (init + context) and `server/routers/*` (the procedures) — lives in `backend-patterns`. This section is the client/RSC half the data layer sits on. Server-side prefetch lives in the App Router route (`app/<route>/page.tsx`), not in `hooks/` — see §6. There is no per-domain `prefetch*.ts` file.
+
+### `lib/time.ts`
+
+```ts
+export const seconds = (n: number) => n * 1_000
+export const minutes = (n: number) => n * 60_000
+```
+
+### `lib/trpc/query-client.ts` — the one home for the global defaults (§2)
+
+`makeQueryClient()` encodes the §2 defaults. It's a **factory**, deliberately: the client provider and the RSC caller each need their *own* instance (a singleton in the browser, a fresh per-request one on the server). The `dehydrate.shouldDehydrateQuery` line is what lets an in-flight RSC prefetch stream to the client — without it, only already-settled queries hydrate.
+
+```ts
+import { defaultShouldDehydrateQuery, QueryClient } from '@tanstack/react-query'
+
+import { minutes, seconds } from '@/lib/time'
+
+export const makeQueryClient = () =>
+  new QueryClient({
+    defaultOptions: {
+      queries: {
+        staleTime: seconds(30),          // modest floor; every domain query overrides this (§2)
+        gcTime: minutes(5),
+        refetchOnWindowFocus: true,
+        retry: (failureCount, error) => {
+          const status = (error as { data?: { httpStatus?: number } })?.data?.httpStatus
+          if (status && status >= 400 && status < 500) return false   // surface 4xx immediately
+          return failureCount < 2
+        },
+      },
+      mutations: { retry: false },       // user-triggered; never silently retried
+      dehydrate: {
+        shouldDehydrateQuery: (query) =>
+          defaultShouldDehydrateQuery(query) || query.state.status === 'pending',
+      },
+    },
+  })
+```
+
+### `lib/trpc/client.tsx` — `useTRPC()` + the provider
+
+`createTRPCContext<AppRouter>()` (from `@trpc/tanstack-react-query`) produces the typed `useTRPC()` hook every hook file imports. The local `getQueryClient()` returns a **browser singleton** (so React can't throw the cache away mid-suspense) and a **fresh client on the server**; the `isServer` check is load-bearing. Wrap the app in `<TRPCReactProvider>` once, in the root layout.
+
+```tsx
+'use client'
+
+import { isServer, QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { createTRPCClient, httpBatchLink } from '@trpc/client'
+import { createTRPCContext } from '@trpc/tanstack-react-query'
+import { useState } from 'react'
+
+import { makeQueryClient } from '@/lib/trpc/query-client'
+import type { AppRouter } from '@/server/routers/_app'
+
+// the CLIENT context factory — note: distinct from the server-side createTRPCContext in server/trpc.ts
+export const { TRPCProvider, useTRPC } = createTRPCContext<AppRouter>()
+
+let browserQueryClient: QueryClient | undefined
+const getQueryClient = () => (isServer ? makeQueryClient() : (browserQueryClient ??= makeQueryClient()))
+
+export const TRPCReactProvider = ({ children }: { children: React.ReactNode }) => {
+  const queryClient = getQueryClient()
+  const [trpcClient] = useState(() =>
+    createTRPCClient<AppRouter>({
+      // relative URL: the browser hits same-origin /api/trpc; RSC prefetch (server.tsx) covers first render.
+      // Add a transformer (e.g. superjson) here AND on the server if you send Dates/Maps over the wire.
+      links: [httpBatchLink({ url: '/api/trpc' })],
+    }),
+  )
+
+  return (
+    <QueryClientProvider client={queryClient}>
+      <TRPCProvider trpcClient={trpcClient} queryClient={queryClient}>
+        {children}
+      </TRPCProvider>
+    </QueryClientProvider>
+  )
+}
+```
+
+```tsx
+// app/layout.tsx — wrap once, at the root
+import { TRPCReactProvider } from '@/lib/trpc/client'
+
+const RootLayout = ({ children }: { children: React.ReactNode }) => (
+  <html lang="en">
+    <body>
+      <TRPCReactProvider>{children}</TRPCReactProvider>
+    </body>
+  </html>
+)
+
+export default RootLayout
+```
+
+### `lib/trpc/server.tsx` — the RSC caller for prefetch (§6)
+
+Server Components don't use the browser client — they call through `createTRPCOptionsProxy`. `getQueryClient` here is wrapped in React's `cache()` so every server call within one request shares one client; that's the instance you `dehydrate()` in the route (§6).
+
+```tsx
+import 'server-only'
+
+import { createTRPCOptionsProxy } from '@trpc/tanstack-react-query'
+import { cache } from 'react'
+
+import { makeQueryClient } from '@/lib/trpc/query-client'
+import { appRouter } from '@/server/routers/_app'
+import { createTRPCContext } from '@/server/trpc'
+
+// stable per-request client — the same instance for every server call in one request
+export const getQueryClient = cache(makeQueryClient)
+
+export const trpc = createTRPCOptionsProxy({
+  ctx: createTRPCContext,
+  router: appRouter,
+  queryClient: getQueryClient,
+})
+```
+
+> **That's the whole setup.** From here on a new domain touches only `hooks/<domain>/` (a `<domain>.cache.ts` + its `use*` hooks) and a router under `server/routers/` — never this section again.
 
 ## The `hooks/` directory — canonical layout
 
@@ -109,7 +232,7 @@ hooks/
 
 ## 2. One QueryClient, global defaults in `lib/trpc/query-client.ts`
 
-Create it once via `makeQueryClient()` and reuse the same factory on client and server (the App Router setup wires this for you).
+`makeQueryClient()` (shown in full under **Foundation**) is the single home for these defaults; `getQueryClient()` hands the right instance to the browser and to each server request. The values it encodes:
 
 | Option | Value | Rule |
 | --- | --- | --- |
