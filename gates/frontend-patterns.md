@@ -2,6 +2,8 @@
 
 Patterns for the Next.js frontend stack: **Next.js (App Router) + React 19 + TypeScript + Zustand + tRPC + React Hook Form + Zod + Tailwind.** Next.js 15 ships React 19, so the codebase is on React 19 idioms throughout — `use()` for context, ref-as-prop instead of `forwardRef`, the `<Context value=…>` provider shorthand (see **React 19 Idioms** below). Reach for those, not their React 18 equivalents.
 
+**Server state goes through tRPC's TanStack React Query integration.** The whole data layer — per-domain `hooks/<domain>/` structure, stale times, mutations, polling, pagination, and server-side prefetch — is owned by the `tanstack-query` gate. This file covers the rest of the frontend; read `tanstack-query` before fetching anything.
+
 ## Component Architecture
 
 ### Reuse Before Build
@@ -195,7 +197,7 @@ Pick the smallest tool that fits the problem.
 
 | State type | Tool |
 |---|---|
-| Server state / cache | tRPC + React Query |
+| Server state / cache | tRPC + TanStack Query — owned by the `tanstack-query` gate |
 | Form state | React Hook Form (single instance, even across wizard steps) |
 | Shared / cross-component / persistent client state | Zustand |
 | App-lifetime cross-cutting (auth, theme, current user) | React Context |
@@ -345,24 +347,26 @@ const StepDetails = () => {
 
 ## tRPC Data Fetching
 
-Prefer tRPC over raw fetch. tRPC queries are the server-state layer — do not mirror tRPC data into Zustand.
+Prefer tRPC over raw fetch — it *is* your TanStack Query layer. Use the **modern TanStack React Query integration** (`useTRPC()` + `trpc.x.queryOptions()` + `useQuery`), not the classic `trpc.x.useQuery()` proxy. **The full data layer — per-domain `hooks/<domain>/` structure, `<domain>.cache.ts`, mutations, polling, pagination, prefetch — is owned by the `tanstack-query` gate.** The two rules that matter here:
+
+- **Server reads go through a `use*` hook backed by the cache**, never `useState` + `useEffect` + `fetch`.
+- **Never mirror server data into Zustand** — the tRPC/TanStack cache is the single source of truth.
 
 ```typescript
-// PASS: tRPC query
-const { data: markets, isLoading, error } = trpc.markets.list.useQuery({ status: 'active' })
+// PASS: server reads live in a domain hook (hooks/markets/useMarketsList.ts)
+const trpc = useTRPC()
+const { data: markets, isLoading, error } = useQuery(trpc.markets.list.queryOptions({ status: 'active' }))
 
-// PASS: tRPC mutation — `isPending` and lifecycle come from the mutation object
-const utils = trpc.useUtils()
-const createMarket = trpc.markets.create.useMutation({
-  onSuccess: () => utils.markets.list.invalidate(),
-})
-
-const onSubmit = async (data: CreateMarketInput) => {
-  await createMarket.mutateAsync(data)
-}
+// PASS: mutation — `isPending` and lifecycle come from the mutation object; invalidate via the query client
+const queryClient = useQueryClient()
+const createMarket = useMutation(
+  trpc.markets.create.mutationOptions({
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: trpc.markets.list.queryKey() }),
+  }),
+)
 
 // FAIL: mirroring tRPC response into Zustand — two sources of truth that drift
-const { data } = trpc.markets.list.useQuery()
+const { data } = useQuery(trpc.markets.list.queryOptions())
 useEffect(() => setMarkets(data), [data])
 ```
 
@@ -371,21 +375,21 @@ useEffect(() => setMarkets(data), [data])
 Every component that loads data handles three states explicitly: **loading**, **empty**, **error**. Never just the happy path.
 
 ```typescript
-// PASS — three states in priority order, off the tRPC query
+// PASS — three states in priority order, off the domain hook (hooks/markets/useMarketsList.ts)
 const MarketList = () => {
-  const { data: markets, isLoading, error, refetch } = trpc.markets.list.useQuery()
+  const { data: markets, isLoading, error, refetch } = useMarketsList()
 
   if (isLoading) return <MarketListSkeleton />
   if (error) return <ErrorState message="Couldn't load markets" onRetry={refetch} />
-  if (markets.length === 0) return <EmptyState message="No markets yet" action={<CreateMarketButton />} />
+  if (!markets || markets.length === 0) return <EmptyState message="No markets yet" action={<CreateMarketButton />} />
 
   return <ul>{markets.map((market) => <MarketRow key={market.id} market={market} />)}</ul>
 }
 
-// FAIL — only the happy path
+// FAIL — only the happy path; ignores loading / error / empty and assumes data is ready
 const MarketList = () => {
-  const { data: markets } = trpc.markets.list.useQuery()
-  return <ul>{markets.map((market) => <MarketRow key={market.id} market={market} />)}</ul>
+  const { data: markets } = useMarketsList()
+  return <ul>{markets?.map((market) => <MarketRow key={market.id} market={market} />)}</ul>
 }
 ```
 
@@ -397,32 +401,37 @@ const MarketList = () => {
 
 For mutations where the post-mutation state is predictable (toggling a favourite, renaming a row, changing a status), render the new state immediately and reconcile when the server responds.
 
-**For server data, use React Query's optimistic-update pattern** through tRPC — it's the tool that owns the cache, so the optimistic value and the eventual server value live in one place:
+**For server data, use TanStack Query's optimistic-update pattern** through tRPC — it owns the cache, so the optimistic value and the eventual server value live in one place. Use `useQueryClient()` + `trpc.x.queryKey()` (the modern integration). The canonical cancel → snapshot → set → rollback → settle shape lives in `tanstack-query` § Mutations:
 
 ```typescript
-// PASS — optimistic update via the tRPC/React Query cache
-const utils = trpc.useUtils()
-const toggleFavourite = trpc.markets.toggleFavourite.useMutation({
-  onMutate: async ({ id, favourited }) => {
-    await utils.markets.list.cancel()
-    const previous = utils.markets.list.getData()
-    utils.markets.list.setData(undefined, (old) =>
-      old?.map((market) => (market.id === id ? { ...market, favourited } : market)),
-    )
-    return { previous }
-  },
-  onError: (_err, _input, context) => {
-    if (context?.previous) utils.markets.list.setData(undefined, context.previous)
-  },
-  onSettled: () => utils.markets.list.invalidate(),
-})
+// PASS — optimistic update via the tRPC / TanStack Query cache
+const trpc = useTRPC()
+const queryClient = useQueryClient()
+const listKey = trpc.markets.list.queryKey()
+
+const toggleFavourite = useMutation(
+  trpc.markets.toggleFavourite.mutationOptions({
+    onMutate: async ({ id, favourited }) => {
+      await queryClient.cancelQueries({ queryKey: listKey })
+      const previous = queryClient.getQueryData(listKey)
+      queryClient.setQueryData(listKey, (old) =>
+        old?.map((market) => (market.id === id ? { ...market, favourited } : market)),
+      )
+      return { previous }
+    },
+    onError: (_err, _input, context) => {
+      if (context?.previous) queryClient.setQueryData(listKey, context.previous)
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: listKey }),
+  }),
+)
 ```
 
 **For client-only or transient optimism** — state that isn't backed by a tRPC query — React 19's `useOptimistic` is lighter. Scope it to the leaf row/item that owns the value so a failure only flickers one row. Don't reach for it for destructive mutations (delete, archive) where a revert would be jarring, or where the server result isn't predictable (server-assigned ID, derived field) — show a normal pending state there instead.
 
 ## Custom Hooks
 
-Reusable behaviour lives in `hooks/`. Names start with `use`; the return value is explicitly typed when its shape isn't obvious.
+Reusable behaviour lives in `hooks/`. Names start with `use`; the return value is explicitly typed when its shape isn't obvious. Cross-cutting hooks stay **flat** in `hooks/` with the domain in the filename (`useMarketFilters.ts`). **Exception:** a server-state domain (≈6+ hooks) gets its own `hooks/<domain>/` folder holding its `<domain>.cache.ts`, query/mutation hooks, and any domain-specific non-query hooks (selection, upload, editor state) — owned by the `tanstack-query` gate.
 
 ```typescript
 const useToggle = (initial = false): [boolean, () => void] => {

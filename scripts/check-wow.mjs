@@ -10,6 +10,7 @@ function readGate(path) {
 
 const codingStandards = readGate('gates/coding-standards.md');
 const frontendPatterns = readGate('gates/frontend-patterns.md');
+const tanstackQuery = readGate('gates/tanstack-query.md');
 const backendPatterns = readGate('gates/backend-patterns.md');
 const securityPatterns = readGate('gates/security-patterns.md');
 
@@ -19,7 +20,7 @@ const context = `
 These rules apply to every response in this session without exception.
 
 ## Orchestration
-- Frontend task: apply coding-standards + frontend-patterns + security-patterns
+- Frontend task: apply coding-standards + frontend-patterns + tanstack-query + security-patterns
 - Backend task: apply coding-standards + backend-patterns + security-patterns
 - Touches both: apply all gates below
 - Specialist audits (security reviews, etc.) can be delegated to agents in agents/
@@ -29,6 +30,9 @@ ${codingStandards}
 
 ## Frontend Patterns (frontend tasks)
 ${frontendPatterns}
+
+## Server State — tRPC + TanStack Query (frontend tasks)
+${tanstackQuery}
 
 ## Backend Patterns (backend tasks)
 ${backendPatterns}
