@@ -43,30 +43,64 @@ Each of these is a **gate failure**:
 - an `index.ts` barrel that re-exports the domain's hooks;
 - a raw `fetch` / network call living inside a hook for an endpoint that has a tRPC procedure.
 
-## File & folder map
+## Supporting files (`lib/`)
+
+The domain hooks lean on a small, fixed set of `lib/` files. They are not per-domain — set them up once:
 
 ```
-app/                          # Next.js App Router — server prefetch lives in page.tsx (see §6)
 lib/
   trpc/
     client.tsx                # 'use client' — TRPCProvider + useTRPC()
     server.tsx                # server tRPC caller + getQueryClient() for RSC prefetch
     query-client.ts           # makeQueryClient() — global TanStack defaults (§2)
   time.ts                     # seconds() / minutes() duration helpers — no bare `60 * 1000`
-hooks/
-  useDebounce.ts, useIsMobile.ts   # cross-cutting hooks stay FLAT (see frontend-patterns)
-  <domain>/                        # one folder per server-state domain
-    <domain>.cache.ts              # stale times + page sizes + poll intervals + option presets
-    use<Domain>List.ts             # one hook per file
-    use<Domain>.ts
-    useCreate<Domain>.ts, useUpdate<Domain>.ts, useDelete<Domain>.ts
-    <sub-resource>/                # optional — when a domain spans many sub-entities
-      use<Domain><SubVerb>.ts
 ```
 
-- **Large domain (≈6+ hooks): own folder** `hooks/<domain>/` holding the query/mutation hooks, the `<domain>.cache.ts`, **and any domain-specific non-query React hooks** — selection state, upload orchestration, editor state. The dividing line: React / React-Query hook → `hooks/<domain>/`; a cross-cutting hook with no domain → stays flat in `hooks/`.
-- **Small domain (<6 hooks): stay flat** in `hooks/`, filename carrying the domain (`useTagsList.ts`).
-- **No barrel.** No `index.ts` aggregator in a domain folder — consumers import each hook directly: `import { usePostsList } from '@/hooks/posts/usePostsList'`. Barrels invite circular imports, defeat tree-shaking, and pull the whole domain into a test that needs one hook. (This is distinct from a component's own `index.tsx` entry file, which is fine — see `frontend-patterns`.)
+Server-side prefetch lives in the App Router route (`app/<route>/page.tsx`), not in `hooks/` — see §6. There is no per-domain `prefetch*.ts` file.
+
+## The `hooks/` directory — canonical layout
+
+Two kinds of hook live in `hooks/`, and the directory shape tells them apart at a glance:
+
+1. **Cross-cutting hooks** — no single domain (`useDebounce`, `useIsMobile`, a compound-component access hook like `useTabs`). They stay **flat** at the root of `hooks/`, one export per file, with a domain-free name.
+2. **Server-state domain hooks** — everything for one backend domain. They live in a **`hooks/<domain>/` folder** once the domain reaches ≈6+ hooks; below that threshold they stay flat with the domain in the filename (`useTagsList.ts`).
+
+A domain folder holds exactly three kinds of thing: the **one** `<domain>.cache.ts` tunables file at the domain root, the `use*` hooks (one export per file), and — only when a domain spans several sub-entities — a sub-folder per sub-resource. Domain-specific **non-query** React hooks (selection, upload, editor state) belong in the domain folder too; the test is *"is it React and about this domain?"*, not *"is it a query?"*.
+
+```
+hooks/
+├── useDebounce.ts                  # cross-cutting — flat, domain-free name
+├── useIsMobile.ts
+├── useTabs.ts                      # compound-component access hook (see frontend-patterns)
+│
+├── posts/                          # simple domain — everything flat inside the folder
+│   ├── posts.cache.ts              # THE tunables file — stale times, page sizes, presets, input mappers
+│   ├── usePostsList.ts             # one query hook per file
+│   ├── usePost.ts
+│   ├── usePostsInfinite.ts
+│   ├── useCreatePost.ts            # one mutation hook per file
+│   ├── useUpdatePost.ts
+│   └── useDeletePost.ts
+│
+└── campaigns/                      # complex domain — sub-resources get their own sub-folders
+    ├── campaigns.cache.ts          # cache file ALWAYS at the domain root, never inside a sub-folder
+    ├── useCampaignsList.ts
+    ├── useCampaign.ts
+    ├── useCampaignSelection.ts     # domain-specific NON-query hook — still lives here
+    ├── comments/                   # sub-resource sub-folder
+    │   ├── useCampaignComments.ts
+    │   └── useCreateCampaignComment.ts
+    ├── items/
+    │   └── useCampaignItems.ts
+    └── media/
+        └── useCampaignMedia.ts
+```
+
+**Naming.** File name === the single export. Query/mutation hooks are `use<Domain><Verb>` — `usePostsList`, `usePost`, `useCreatePost`, `useUpdateCampaignItem`. The cache file is `<domain>.cache.ts` — one name per concept, never `<domain>Keys.ts`, `<domain>Hooks.ts`, or `index.ts`.
+
+**Flat vs folder — the rule.** ≈6+ hooks for one domain → give it a `hooks/<domain>/` folder. Fewer → leave them flat in `hooks/` with the domain in the filename. Don't pre-create a folder for a two-hook domain; don't leave fifteen `useCampaign*.ts` files loose at the root. A sub-resource earns its own sub-folder only when it has its own cluster of hooks (`comments/`, `items/`) — the `<domain>.cache.ts` and any single sub-resource hook stay at the domain root.
+
+**No barrel.** No `index.ts` aggregator anywhere under `hooks/` — consumers import each hook directly: `import { usePostsList } from '@/hooks/posts/usePostsList'`. Barrels invite circular imports, defeat tree-shaking, and pull a whole domain into a test that needs one hook. (A component's own `index.tsx` entry file is a different thing and is fine — see `frontend-patterns`.)
 
 ## 1. Server state lives in the cache, not in Zustand
 
