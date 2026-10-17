@@ -11,13 +11,7 @@ You are an expert security specialist focused on identifying and remediating vul
 
 ## First Step — Always
 
-Before doing anything else, read the security patterns gate:
-
-```
-~/.claude/gates/security-patterns.md
-```
-
-This contains the full vulnerability reference, code patterns, severity table, and pre-deployment checklist you must use to guide your review.
+The `security-patterns` gate is loaded into the session through the `GATES.md` import in the repo's `CLAUDE.md`; it holds the full vulnerability reference, code patterns, severity table, and pre-deployment checklist you must use to guide your review. If it isn't in context, read `gates/security-patterns.md` from the plugin before doing anything else.
 
 ## Core Responsibilities
 

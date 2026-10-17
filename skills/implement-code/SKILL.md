@@ -1,24 +1,21 @@
-You are about to implement code. Before writing a single line, you must read and internalise the standards gates.
+---
+name: implement-code
+description: Implement a feature against the engineering standards
+disable-model-invocation: true
+---
 
-## Step 1 — Read Gates
+# Implement Code
 
-Read all of the following files in full:
+You are about to implement code. The engineering standards are loaded in full through the `GATES.md` import in this repo's `CLAUDE.md` — apply them; do not write a line that violates them. If the `SessionStart` hook warned that the gates are not loaded, Read every gate from the gate root it names before continuing.
 
-1. `~/.claude/gates/coding-standards.md`
-2. `~/.claude/gates/frontend-patterns.md`
-3. `~/.claude/gates/backend-patterns.md`
-4. `~/.claude/gates/security-patterns.md`
-
-Read all four regardless of what is being implemented — standards and security apply universally, and most features touch both frontend and backend.
-
-## Step 2 — Understand the Request
+## Step 1 — Understand the Request
 
 Before planning anything, confirm your understanding of:
 - What is being built
 - Where it lives in the project structure (`app/`, `components/`, `server/`, `stores/`, etc.)
 - Whether it is frontend, backend, or both
 
-## Step 3 — Plan Before You Code
+## Step 2 — Plan Before You Code
 
 Briefly outline your implementation approach:
 - Files to create or modify
@@ -28,7 +25,7 @@ Briefly outline your implementation approach:
 
 Do not skip this step. Do not write code yet.
 
-## Step 4 — Implement
+## Step 3 — Implement
 
 Now write the code. Every file you produce must comply with the gates. Use this as your checklist before outputting each file:
 
@@ -78,6 +75,6 @@ Now write the code. Every file you produce must comply with the gates. Use this 
 - [ ] No `any` casts that bypass validation
 - [ ] Auth checks present on protected routes/procedures
 
-## Step 5 — Self-Review
+## Step 4 — Self-Review
 
 After writing all code, re-read each file against the checklist above. Fix any violations before presenting the output. Do not ask the user to fix things you can resolve yourself.

@@ -1,15 +1,15 @@
-You are about to perform a full pre-PR code review. Follow every step in order.
+---
+name: review-code
+description: Full pre-PR code review against the engineering standards
+disable-model-invocation: true
+allowed-tools: Bash(git *)
+---
 
-## Step 1 — Read Gates
+# Review Code
 
-Read all of the following files in full before looking at any code:
+A full pre-PR review against the engineering standards, which are loaded in full through the `GATES.md` import in this repo's `CLAUDE.md`. If the `SessionStart` hook warned that the gates are not loaded, Read them from the gate root it names first. Follow every step in order.
 
-1. `~/.claude/gates/coding-standards.md`
-2. `~/.claude/gates/frontend-patterns.md`
-3. `~/.claude/gates/backend-patterns.md`
-4. `~/.claude/gates/security-patterns.md`
-
-## Step 2 — Collect the Full Diff
+## Step 1 — Collect the Full Diff
 
 Run the following commands to capture everything that will be in the PR — committed changes, staged changes, and unstaged changes:
 
@@ -28,7 +28,7 @@ git log dev...HEAD --oneline
 
 If the base branch is not `dev`, use whatever the actual base branch is. If uncertain, ask before proceeding.
 
-## Step 3 — Generate the Review Report
+## Step 2 — Generate the Review Report
 
 Produce a structured report using the format below. Be specific — reference file names, line numbers, and quote the actual offending code where relevant. Do not be vague.
 
@@ -107,7 +107,7 @@ One or two sentences on the overall state of the PR.
 
 ---
 
-## Step 4 — Offer to Fix
+## Step 3 — Offer to Fix
 
 After presenting the report, ask:
 
