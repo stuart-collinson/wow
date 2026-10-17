@@ -6,7 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/check-wow.mjs\""
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/check-gates.mjs\"",
+            "statusMessage": "Checking the engineering standards are loaded"
           }
         ]
       }
